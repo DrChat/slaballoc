@@ -2,7 +2,12 @@
 name = "slaballoc"
 version = "0.1.0"
 edition = "2018"
+authors = ["Justin Moore <me@justinm.one>"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "Safe and lockless fixed-size memory allocator for `no_std` systems"
+keywords = ["no_std", "allocator", "kernel", "slab", "lock-free"]
+repository = "https://github.com/DrChat/buddyalloc"
+license = "Apache-2.0/MIT"
+readme = "README.md"
 
 [dependencies]
