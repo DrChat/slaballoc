@@ -63,19 +63,21 @@ impl<T: Sized> SlabAllocator<T> {
             Err(SlabError::BadBaseAlignment)?;
         }
 
+        let element_size = core::cmp::max(core::mem::size_of::<T>(), core::mem::align_of::<T>());
+
         // Calculate the size of the data segment, subtracting out the ideal
         // bitmap size.
-        let data_size = size - div_ceil(size / core::mem::size_of::<T>(), 8);
+        let data_size = size - div_ceil(size / element_size, 8);
 
         // Partition off the data first.
         // FIXME: Does this ensure the alignment of elements?
         let data = core::ptr::slice_from_raw_parts_mut(
             mem as *mut MaybeUninit<T>,
-            data_size / core::mem::size_of::<MaybeUninit<T>>(),
+            data_size / element_size, // N.B: `MaybeUninit<T>` is the same size/alignment as T.
         );
 
         // Calculate the actual number of elements that can be stored in the data segment.
-        let num_elems = data_size / core::mem::size_of::<T>();
+        let num_elems = data_size / element_size;
         let bitmap_size = div_ceil(num_elems, 8);
 
         // Slice off the bitmap, taking care to initialize it.
