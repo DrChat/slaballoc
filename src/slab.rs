@@ -1,4 +1,3 @@
-use core::alloc::AllocError;
 use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::Ordering;
@@ -22,10 +21,21 @@ fn atomic_btc(arr: &[AtomicU8], idx: usize) -> Option<bool> {
     Some((val & (1 << bit)) != 0)
 }
 
-#[derive(Clone, Copy, Debug)]
+/// Perform a division, preferring to round up.
+fn div_ceil(num: usize, dem: usize) -> usize {
+    (num + dem) / dem
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SlabError {
+    /// The base address of the heap is not aligned properly.
     BadBaseAlignment,
-    BitSlice,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlabAllocError {
+    /// The heap was observed to be exhausted at the time of the allocation.
+    HeapExhausted,
 }
 
 unsafe impl<T> Send for SlabAllocator<T> {}
@@ -55,7 +65,7 @@ impl<T: Sized> SlabAllocator<T> {
 
         // Calculate the size of the data segment, subtracting out the ideal
         // bitmap size.
-        let data_size = size - ((size / core::mem::size_of::<T>()) / 8);
+        let data_size = size - div_ceil(size / core::mem::size_of::<T>(), 8);
 
         // Partition off the data first.
         // FIXME: Does this ensure the alignment of elements?
@@ -66,13 +76,14 @@ impl<T: Sized> SlabAllocator<T> {
 
         // Calculate the actual number of elements that can be stored in the data segment.
         let num_elems = data_size / core::mem::size_of::<T>();
+        let bitmap_size = div_ceil(num_elems, 8);
 
         // Slice off the bitmap, taking care to initialize it.
         let bitmap = {
             let bitmap = unsafe {
                 core::slice::from_raw_parts_mut(
-                    mem.add(size - (num_elems / 8)) as *mut MaybeUninit<AtomicU8>,
-                    num_elems / 8,
+                    mem.add(size - bitmap_size) as *mut MaybeUninit<AtomicU8>,
+                    bitmap_size,
                 )
             };
 
@@ -107,10 +118,10 @@ impl<T: Sized> SlabAllocator<T> {
         atomic_btc(self.bitmap, slot);
     }
 
-    fn allocate_raw(&self) -> Result<&mut MaybeUninit<T>, ()> {
-        let data = unsafe { &*self.data };
-        let slot = self.allocate_slot().ok_or(())?;
+    fn allocate_raw(&self) -> Result<&mut MaybeUninit<T>, SlabAllocError> {
+        let slot = self.allocate_slot().ok_or(SlabAllocError::HeapExhausted)?;
 
+        let data = unsafe { &*self.data };
         let el_ptr = &data[slot] as *const _ as *mut MaybeUninit<T>;
 
         // Since we have an exclusive slot, we can safely pass out a mutable pointer.
@@ -127,9 +138,9 @@ impl<T: Sized> SlabAllocator<T> {
         self.deallocate_slot(slot as usize);
     }
 
-    pub fn allocate<'a>(&'a self, item: T) -> Result<SlabAlloc<'a, T>, AllocError> {
+    pub fn allocate<'a>(&'a self, item: T) -> Result<SlabAlloc<'a, T>, SlabAllocError> {
         let e = unsafe {
-            let e = self.allocate_raw().map_err(|_| AllocError)?;
+            let e = self.allocate_raw()?;
             e.as_mut_ptr().write(item);
             e.assume_init_mut()
         };
@@ -140,6 +151,7 @@ impl<T: Sized> SlabAllocator<T> {
 
 /// A container structure for an allocation made in a [SlabAllocator].
 /// This is similar to a [core::alloc::Box].
+#[derive(Debug)]
 pub struct SlabAlloc<'a, T>(&'a SlabAllocator<T>, NonNull<T>);
 
 impl<T> Drop for SlabAlloc<'_, T> {
@@ -165,13 +177,14 @@ impl<T> DerefMut for SlabAlloc<'_, T> {
     }
 }
 
+#[cfg(test)]
 mod test {
     // Allow use of std in tests.
     extern crate std;
 
-    use core::{alloc::Layout, sync::atomic::AtomicU8};
+    use core::alloc::Layout;
+    use std::vec;
     use std::vec::Vec;
-    use std::{println, vec};
 
     #[test]
     fn test_atomic_bt() {
@@ -207,7 +220,7 @@ mod test {
     }
 
     #[test]
-    fn test_allocator() {
+    fn test_basic() {
         use super::*;
 
         #[derive(Debug)]
@@ -219,7 +232,7 @@ mod test {
         let mem = unsafe { std::alloc::alloc(layout) };
 
         let alloc: SlabAllocator<Element> =
-            SlabAllocator::new(mem as *mut MaybeUninit<u8>, 16384).unwrap();
+            SlabAllocator::new(mem as *mut MaybeUninit<u8>, layout.size()).unwrap();
 
         let mut allocs = Vec::new();
 
@@ -227,6 +240,42 @@ mod test {
         for i in 0..32 {
             allocs.push(alloc.allocate(Element { data: i as usize }).unwrap());
         }
+
+        drop(allocs);
+        drop(alloc);
+        unsafe { std::alloc::dealloc(mem, layout) };
+    }
+
+    /// Test a small slab allocator and ensure it properly reports heap exhaustion.
+    #[test]
+    fn test_small() {
+        use super::*;
+
+        #[derive(Debug)]
+        struct Element {
+            data: usize,
+        }
+
+        let layout = Layout::from_size_align(32, 128).unwrap();
+        let mem = unsafe { std::alloc::alloc(layout) };
+
+        let alloc: SlabAllocator<Element> =
+            SlabAllocator::new(mem as *mut MaybeUninit<u8>, layout.size()).unwrap();
+
+        let mut allocs = Vec::new();
+
+        // N.B: There are only 3 slots available.
+        allocs.push(alloc.allocate(Element { data: 0 as usize }).unwrap());
+        allocs.push(alloc.allocate(Element { data: 1 as usize }).unwrap());
+        allocs.push(alloc.allocate(Element { data: 2 as usize }).unwrap());
+        assert_eq!(
+            SlabAllocError::HeapExhausted,
+            alloc.allocate(Element { data: 3 as usize }).unwrap_err()
+        );
+
+        assert_eq!(allocs[0].data, 0);
+        assert_eq!(allocs[1].data, 1);
+        assert_eq!(allocs[2].data, 2);
 
         drop(allocs);
         drop(alloc);

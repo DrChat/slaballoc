@@ -31,3 +31,10 @@ The allocation bitmap can then be accessed locklessly using atomic intrinsics.
 When allocating, we'll simply set a bit in the bitmap, and if successful, return
 the memory corresponding to that bit.
 When deallocating, we can simply unset the bit and the memory is freed.
+
+## Alternatives
+If you're using Rust on a hosted environment with `std` available, you might
+be interested in using [sharded-slab][] instead. That crate gets you the same
+semantics as this one, without having to used a fixed-size memory block.
+
+[sharded-slab]: https://crates.io/crates/sharded-slab
