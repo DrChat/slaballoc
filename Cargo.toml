@@ -1,6 +1,6 @@
 [package]
 name = "slaballoc"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2018"
 authors = ["Justin Moore <me@justinm.one>"]
 
