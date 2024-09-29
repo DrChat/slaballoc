@@ -50,8 +50,8 @@ pub struct SlabAllocator<T: Sized> {
     num_elems: usize,
     /// The bitmap slice.
     bitmap: &'static mut [AtomicU8],
-    /// The data slice.
-    data: *mut [MaybeUninit<T>],
+    /// A pointer to the data block, which contains `num_elems` elements.
+    data: *mut MaybeUninit<T>,
 }
 
 impl<T: Sized> SlabAllocator<T> {
@@ -71,10 +71,7 @@ impl<T: Sized> SlabAllocator<T> {
 
         // Partition off the data first.
         // FIXME: Does this ensure the alignment of elements?
-        let data = core::ptr::slice_from_raw_parts_mut(
-            mem as *mut MaybeUninit<T>,
-            data_size / element_size, // N.B: `MaybeUninit<T>` is the same size/alignment as T.
-        );
+        let data = mem as *mut MaybeUninit<T>;
 
         // Calculate the actual number of elements that can be stored in the data segment.
         let num_elems = data_size / element_size;
@@ -123,11 +120,10 @@ impl<T: Sized> SlabAllocator<T> {
     fn allocate_raw(&self) -> Result<&mut MaybeUninit<T>, SlabAllocError> {
         let slot = self.allocate_slot().ok_or(SlabAllocError::HeapExhausted)?;
 
-        let data = unsafe { &*self.data };
-        let el_ptr = &data[slot] as *const _ as *mut MaybeUninit<T>;
+        let data = unsafe { &mut *self.data.add(slot) };
 
         // Since we have an exclusive slot, we can safely pass out a mutable pointer.
-        Ok(unsafe { &mut *el_ptr })
+        Ok(&mut *data)
     }
 
     unsafe fn deallocate_raw(&self, elm: *mut T) {
