@@ -6,7 +6,7 @@ authors = ["Justin Moore <me@justinm.one>"]
 
 description = "Safe and lockless fixed-size memory allocator for `no_std` systems"
 keywords = ["no_std", "allocator", "kernel", "slab", "lock-free"]
-repository = "https://github.com/DrChat/buddyalloc"
+repository = "https://github.com/DrChat/slaballoc"
 license = "Apache-2.0/MIT"
 readme = "README.md"
 
