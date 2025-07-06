@@ -58,16 +58,16 @@ impl<T: Sized> SlabAllocator<T> {
     /// Create a new instance of this allocator.
     /// If the input parameters are invalid, this will return a [SlabError].
     pub fn new(mem: *mut MaybeUninit<u8>, size: usize) -> Result<Self, SlabError> {
-        // Ensure the size is aligned to the size of the contained objects.
-        if size & (core::mem::size_of::<T>() - 1) != 0 {
-            Err(SlabError::BadBaseAlignment)?;
+        // Verify the base address is aligned properly.
+        if (mem as usize) & (align_of::<T>() - 1) != 0 {
+            return Err(SlabError::BadBaseAlignment);
         }
 
-        let element_size = core::cmp::max(core::mem::size_of::<T>(), core::mem::align_of::<T>());
+        let element_size = core::mem::size_of::<T>();
 
         // Calculate the size of the data segment, subtracting out the ideal
         // bitmap size.
-        let data_size = size - div_ceil(size / element_size, 8);
+        let data_size = size - div_ceil(size / element_size, u8::BITS as usize);
 
         // Partition off the data first.
         // FIXME: Does this ensure the alignment of elements?
@@ -75,7 +75,7 @@ impl<T: Sized> SlabAllocator<T> {
 
         // Calculate the actual number of elements that can be stored in the data segment.
         let num_elems = data_size / element_size;
-        let bitmap_size = div_ceil(num_elems, 8);
+        let bitmap_size = div_ceil(num_elems, u8::BITS as usize);
 
         // Slice off the bitmap, taking care to initialize it.
         let bitmap = {
@@ -90,7 +90,10 @@ impl<T: Sized> SlabAllocator<T> {
                 b.write(AtomicU8::new(0));
             }
 
-            unsafe { MaybeUninit::slice_assume_init_mut(bitmap) }
+            // The memory is now initialized.
+            unsafe {
+                core::slice::from_raw_parts_mut(bitmap.as_mut_ptr() as *mut AtomicU8, bitmap.len())
+            }
         };
 
         Ok(Self {
